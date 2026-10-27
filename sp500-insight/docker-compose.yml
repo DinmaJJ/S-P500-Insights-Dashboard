@@ -1,0 +1,89 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: sp500-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sp500}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sp500_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-sp500_insight}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sp500} -d ${POSTGRES_DB:-sp500_insight}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sp500-net
+
+  prefect:
+    image: prefecthq/prefect:3-latest
+    container_name: sp500-prefect
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+    environment:
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER:-sp500}:${POSTGRES_PASSWORD:-sp500_secret}@db:5432/prefect
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - sp500-net
+
+  # Optional worker (run flows locally or via this container later)
+  # prefect-worker:
+  #   image: prefecthq/prefect:3-latest
+  #   command: prefect worker start --pool default-agent-pool
+  #   environment:
+  #     PREFECT_API_URL: http://prefect:4200/api
+  #   depends_on:
+  #     - prefect
+  #   networks:
+  #     - sp500-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sp500-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sp500}:${POSTGRES_PASSWORD:-sp500_secret}@db:5432/${POSTGRES_DB:-sp500_insight}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-sp500}:${POSTGRES_PASSWORD:-sp500_secret}@db:5432/${POSTGRES_DB:-sp500_insight}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - sp500-net
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Frontend is usually run on the host during development
+  # Uncomment to run it in Docker too
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     NEXT_PUBLIC_API_URL: http://localhost:8000
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - sp500-net
+
+volumes:
+  postgres_data:
+
+networks:
+  sp500-net:
+    driver: bridge
