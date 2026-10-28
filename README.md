@@ -1,1 +1,0 @@
-# S-P500-Insights-Dashboard
